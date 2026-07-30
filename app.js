@@ -248,7 +248,7 @@ function renderNav() {
   $$('#navItems [data-nav]').forEach(b => b.onclick = () => go(b.dataset.nav));
   const u = currentUser;
   $('#navUser').innerHTML = u ? `<span class="avatar">${esc(u.name.slice(0, 2).toUpperCase())}</span><span>${esc(u.name)}</span>` : '';
-  $('#navUser').onclick = () => { localStorage.removeItem('dppi_user'); currentUser = null; boot(); };
+  $('#navUser').onclick = () => { localStorage.removeItem('dppi_user'); sessionStorage.setItem('dppi_manual_gate', '1'); currentUser = null; boot(); };
   const dot = $('#syncDot');
   dot.className = 'sync-dot ' + (DB.sync.status === 'live' ? 'live' : DB.sync.status === 'error' ? 'error' : DB.sync.status === 'signed-out' ? 'signed-out' : '');
   dot.title = 'Sync: ' + DB.sync.status + (DB.sync.lastError ? ' — ' + DB.sync.lastError : '');
@@ -1172,7 +1172,7 @@ function viewTeam(v) {
         <span class="avatar">${esc(u.name.slice(0, 2).toUpperCase())}</span>
         <div class="row-main">
           <div class="t">${esc(u.name)} ${u.id === currentUser.id ? '<span class="tag free" style="margin-left:6px">you</span>' : ''}</div>
-          <div class="s" style="text-transform:capitalize">${esc(u.role)}${u.pin ? ' · PIN set' : ' · no PIN'} — ${PERMS.filter(([k]) => u.perms[k]).length}/${PERMS.length} permissions</div>
+          <div class="s">${u.email ? esc(u.email) + ' · ' : ''}<span style="text-transform:capitalize">${esc(u.role)}</span> — ${PERMS.filter(([k]) => u.perms[k]).length}/${PERMS.length} permissions</div>
         </div>
         <div class="row-side"><span class="tag ${u.role === 'owner' ? 'active' : 'free'}">${esc(u.role)}</span></div>
       </div>`).join('')}
@@ -1186,20 +1186,47 @@ function viewTeam(v) {
   $$('[data-user]', v).forEach(el => el.onclick = () => userModal(DB.state.team.find(u => u.id === el.dataset.user)));
 }
 
+/** app role → database role (what they may actually read/write in the cloud) */
+const DB_ROLE = { owner: 'owner', admin: 'admin', tech: 'editor', viewer: 'viewer' };
+
+/** Record/refresh the invite in Supabase so this email gets the right access. */
+async function pushInvite(email, appRole) {
+  if (!email || !DB.sync.client || !DB.sync.session) return false;
+  const role = DB_ROLE[appRole] || 'viewer';
+  try {
+    const { error } = await DB.sync.client.from('invites').upsert({ email: email.toLowerCase(), role });
+    if (error) throw error;
+    // if they've already signed up, update their live role too
+    await DB.sync.client.from('profiles').update({ role }).eq('email', email.toLowerCase());
+    return true;
+  } catch (e) { console.warn('invite push', e); toast('Could not save invite: ' + (e.message || e)); return false; }
+}
+
+function inviteMailto(u) {
+  const subject = 'You’ve been added to DPPI Inventory';
+  const body = `Hi ${u.name},\n\nYou’ve been given access to DPPI Inventory.\n\n1. Open https://kristianwood.github.io/DPPI-inventory/ on your phone or computer\n2. Go to Settings → Cloud sync → Sign in\n3. Enter this email address (${u.email}) and the 6-digit code it sends you\n\nTip: in Safari on iPhone/iPad, tap Share → Add to Home Screen to install it like an app.`;
+  window.location.href = `mailto:${encodeURIComponent(u.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 function userModal(u) {
   const isNew = !u;
-  const user = u || { name: '', role: 'tech', pin: '', perms: { ...ROLE_PRESETS.tech } };
+  const user = u || { name: '', email: '', role: 'tech', pin: '', perms: { ...ROLE_PRESETS.tech } };
   const perms = { ...user.perms };
   const m = openModal(`
     <div class="modal-head"><h2>${isNew ? 'Add Person' : 'Edit ' + esc(user.name)}</h2><button class="icon-btn" id="mx">${ICONS.x}</button></div>
     <div class="modal-body">
       <div class="form-row">
         <div class="field"><label>Name</label><input id="u_name" value="${esc(user.name)}"></div>
+        <div class="field"><label>Email</label><input id="u_email" type="email" value="${esc(user.email || '')}" placeholder="them@example.com">
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--ink-3);line-height:1.55;margin:-6px 0 14px">With an email set, they sign in on their own device with a 6-digit emailed code and automatically get exactly these permissions — you can send them the invite when you save.</p>
+      <div class="form-row">
         <div class="field"><label>Role preset</label>
           <select id="u_role">${Object.keys(ROLE_PRESETS).map(r => `<option value="${r}" ${user.role === r ? 'selected' : ''}>${r[0].toUpperCase() + r.slice(1)}</option>`).join('')}</select>
         </div>
+        <div class="field"><label>PIN (shared-device lock, optional)</label><input id="u_pin" inputmode="numeric" maxlength="4" value="${esc(user.pin || '')}" placeholder="Leave blank for none"></div>
       </div>
-      <div class="field"><label>PIN (4 digits, optional)</label><input id="u_pin" inputmode="numeric" maxlength="4" value="${esc(user.pin || '')}" placeholder="Leave blank for none"></div>
       <div class="field"><label>Permissions</label>
         <div id="permList" style="display:flex;flex-direction:column;gap:9px;margin-top:4px">
           ${PERMS.map(([k, label]) => `
@@ -1211,10 +1238,12 @@ function userModal(u) {
     </div>
     <div class="modal-foot">
       ${!isNew && user.role !== 'owner' ? `<button class="btn danger" id="delUser" style="margin-right:auto">Remove</button>` : ''}
+      ${!isNew && user.email ? `<button class="btn" id="mailInvite">Email invite</button>` : ''}
       <button class="btn ghost" id="mcancel">Cancel</button>
       <button class="btn primary" id="msave">${isNew ? 'Add' : 'Save'}</button>
     </div>
   `);
+  if ($('#mailInvite', m)) $('#mailInvite', m).onclick = () => inviteMailto(user);
   $('#u_role', m).onchange = () => {
     const preset = ROLE_PRESETS[$('#u_role', m).value];
     $$('[data-perm]', m).forEach(cb => cb.checked = !!preset[cb.dataset.perm]);
@@ -1225,19 +1254,30 @@ function userModal(u) {
     DB.state.team = DB.state.team.filter(x => x.id !== u.id);
     DB.commit('user-delete'); closeModal(); render();
   };
-  $('#msave', m).onclick = () => {
+  $('#msave', m).onclick = async () => {
     const name = $('#u_name', m).value.trim();
     if (!name) { $('#u_name', m).focus(); return; }
+    const email = $('#u_email', m).value.trim().toLowerCase();
     const pin = $('#u_pin', m).value.replace(/\D/g, '').slice(0, 4);
     const newPerms = {};
     $$('[data-perm]', m).forEach(cb => newPerms[cb.dataset.perm] = cb.checked);
-    const data = { name, role: $('#u_role', m).value, pin, perms: newPerms };
-    if (isNew) DB.state.team.push({ id: DB.uid('u'), createdAt: Date.now(), ...data });
+    const data = { name, email, role: $('#u_role', m).value, pin, perms: newPerms };
+    let person;
+    if (isNew) { person = { id: DB.uid('u'), createdAt: Date.now(), ...data }; DB.state.team.push(person); }
     else {
-      Object.assign(u, data);
+      const roleChanged = u.role !== data.role || (u.email || '') !== email;
+      Object.assign(u, data); person = u;
       if (currentUser.id === u.id) currentUser = u;
+      person._roleChanged = roleChanged;
     }
-    DB.commit('user-save'); closeModal(); render(); toast('Saved');
+    DB.commit('user-save'); closeModal(); render();
+    if (email && (isNew || person._roleChanged)) {
+      delete person._roleChanged;
+      const ok = await pushInvite(email, data.role);
+      if (ok && isNew && confirm(`Invite saved — ${name} can now sign in with ${email}.\n\nOpen an invite email to send them?`)) inviteMailto(person);
+      else if (!DB.sync.session) toast('Sign in to cloud sync to activate their access');
+      else toast('Saved');
+    } else toast('Saved');
   };
 }
 
@@ -1460,8 +1500,25 @@ function showGate() {
   });
 }
 
+/** When a cloud session exists and the gate is showing, sign the matching
+    team member straight in (creating a viewer entry for unknown emails). */
+function tryAutoEnter() {
+  if (currentUser || sessionStorage.getItem('dppi_manual_gate')) return;
+  if ($('#gate').classList.contains('hidden')) return;
+  const email = DB.sync.session?.user?.email?.toLowerCase();
+  if (!email) return;
+  let u = DB.state.team.find(t => (t.email || '').toLowerCase() === email);
+  if (!u) {
+    u = { id: DB.uid('u'), name: email.split('@')[0], email, role: 'viewer', pin: '', perms: { ...ROLE_PRESETS.viewer }, createdAt: Date.now() };
+    DB.state.team.push(u);
+    DB.commit('user-autocreate');
+  }
+  enter(u);
+}
+
 function enter(user) {
   currentUser = user;
+  sessionStorage.removeItem('dppi_manual_gate');
   localStorage.setItem('dppi_user', user.id);
   $('#gate').classList.add('hidden');
   $('#shell').classList.remove('hidden');
@@ -1493,7 +1550,8 @@ DB.onChange(reason => {
     if (me) { currentUser = me; render(); toast('Synced from cloud'); }
     else boot();
   } else if (reason === 'sync') {
-    renderNav();
+    if (currentUser) renderNav();
+    tryAutoEnter();
   }
 });
 

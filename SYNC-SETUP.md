@@ -35,10 +35,17 @@ The project URL and public key are already built into the app — on any device,
 just open **Settings → Cloud sync → Sign in**, enter your email, and type in the
 code it sends you. Done.
 
-The **first person to sign in becomes the owner.** Everyone who signs in after
-starts as a read-only *viewer* until you promote them:
-**Dashboard → Table Editor → profiles → change their `role`** to
-`editor` or `admin` (they can then make changes that sync).
+The **first person to sign in becomes the owner.**
+
+## Adding people (all in-app)
+In the app: **Team → Add Person** — name, email, role and permissions.
+Saving records the invite in the cloud, and you can send them a ready-made
+invite email. When they sign in with that email, they automatically get exactly
+the role and permissions you chose — nothing to do in the Supabase dashboard.
+
+Role presets map to cloud access like this: Owner/Admin and Tech can make
+changes that sync; Viewer is read-only everywhere (and by default sees no
+pricing at all).
 
 ## 5. Other devices
 Open <https://kristianwood.github.io/DPPI-inventory/> on each device and sign in —

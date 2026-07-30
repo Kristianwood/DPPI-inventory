@@ -169,7 +169,11 @@ const DB = (() => {
       try {
         const { data, error } = await this.client.from('app_state').select('data, updated_at_ms').eq('id', 1).maybeSingle();
         if (error) throw error;
-        if (data && data.data && (data.updated_at_ms || 0) > (state.meta.updatedAt || 0)) {
+        // A device with no real content yet must adopt the cloud workspace even if
+        // its (trivial) local edits are newer — otherwise a fresh phone could
+        // overwrite the whole company's data with an empty state.
+        const virgin = !state.gear.length && !state.jobs.length && !state.invoices.length && state.team.length <= 1;
+        if (data && data.data && ((data.updated_at_ms || 0) > (state.meta.updatedAt || 0) || virgin)) {
           replaceState(data.data, { reason: 'remote' });
         } else if (!data) {
           await this.push(); // first device seeds the cloud row
