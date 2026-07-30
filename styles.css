@@ -319,6 +319,14 @@ table.data th.num { text-align: right; }
   transform: translate(-50%, -50%) scale(1.02);
 }
 
+/* ---------- colour swatches ---------- */
+.swatches { display: flex; gap: 9px; flex-wrap: wrap; padding: 2px 0; }
+.swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform .12s, border-color .15s, box-shadow .15s; }
+.swatch:hover { transform: scale(1.12); }
+.swatch.sel { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.25); }
+.swatch.none { background: rgba(255,255,255,.06); border: 2px dashed var(--glass-border-lit); color: var(--ink-3); font-size: 11px; display: grid; place-items: center; }
+.swatch.none.sel { border-style: solid; border-color: #fff; }
+
 /* ---------- usage logging ---------- */
 .usage-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .usage-days { display: flex; gap: 8px; padding: 14px 16px 10px; overflow-x: auto; border-bottom: 1px solid var(--glass-border); flex: none; }

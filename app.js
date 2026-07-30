@@ -23,6 +23,33 @@ const todayISO = () => iso(new Date());
 const fmtDate = i => new Date(i + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' });
 const fmtDateShort = i => new Date(i + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
 const JOB_COLORS = ['#0D9488', '#8B5CF6', '#D97706', '#0284C7', '#F43F5E'];
+const TAG_COLORS = ['#0D9488', '#8B5CF6', '#D97706', '#0284C7', '#F43F5E', '#65A30D', '#C026D3', '#64748B'];
+
+/** The colour a job displays as: a tagged kit on the job wins, else the job's own tag. */
+function jobColor(job) {
+  for (const n of (job.nodes || [])) {
+    if (n.kind === 'kit') {
+      const k = getKit(n.refId);
+      if (k && k.color) return k.color;
+    }
+  }
+  return job.color || JOB_COLORS[0];
+}
+
+/** Shared colour swatch row for modals. Wire with wireSwatches(). */
+function swatchesHTML(id, selected, { allowNone } = {}) {
+  return `<div class="swatches" id="${id}">
+    ${allowNone ? `<button type="button" class="swatch none ${!selected ? 'sel' : ''}" data-c="" title="No colour">✕</button>` : ''}
+    ${TAG_COLORS.map(c => `<button type="button" class="swatch ${selected === c ? 'sel' : ''}" data-c="${c}" style="background:${c}" title="${c}"></button>`).join('')}
+  </div>`;
+}
+function wireSwatches(rootId, onPick) {
+  const root = document.getElementById(rootId);
+  $$('.swatch', root).forEach(b => b.onclick = () => {
+    $$('.swatch', root).forEach(x => x.classList.toggle('sel', x === b));
+    onPick(b.dataset.c);
+  });
+}
 
 const ICONS = {
   jobs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>',
@@ -310,7 +337,7 @@ function viewJobs(v) {
       const tagCls = st === 'active' ? 'active' : st === 'upcoming' ? 'good' : st === 'wrapped' ? 'free' : 'warn';
       return `
       <div class="row-card glass" data-job="${j.id}">
-        <span class="dot" style="background:${j.color}"></span>
+        <span class="dot" style="background:${jobColor(j)}"></span>
         <div class="row-main">
           <div class="t">${esc(j.name)}</div>
           <div class="s">${esc(j.prodCo || 'No production company')} · ${j.shootDays?.length ? fmtDateShort(j.shootDays[0]) + ' – ' + fmtDateShort(j.shootDays[j.shootDays.length - 1]) + ` · ${t.days} day${t.days === 1 ? '' : 's'}` : 'no dates'}${j.po ? ` · PO ${esc(j.po)}` : ''}</div>
@@ -351,6 +378,10 @@ function jobModal(job) {
         <div class="field"><label>First shoot day</label><input id="f_start" type="date" value="${start}"></div>
         <div class="field"><label>Last shoot day</label><input id="f_end" type="date" value="${end}"></div>
       </div>
+      <div class="field"><label>Colour tag</label>
+        ${swatchesHTML('jobSwatches', j.color || (isNew ? JOB_COLORS[DB.state.jobs.length % JOB_COLORS.length] : ''))}
+        <span class="hint">Shows on the jobs list and calendar. A colour-tagged kit on the job overrides this, so you can see which kit is where.</span>
+      </div>
       <div class="field"><label>Job discount</label>
         <div style="display:flex;gap:10px;align-items:center">
           <div class="seg" id="discSeg"><button data-t="pct" class="${(j.discount?.type || 'pct') === 'pct' ? 'active' : ''}">%</button><button data-t="flat" class="${j.discount?.type === 'flat' ? 'active' : ''}">$</button></div>
@@ -367,6 +398,8 @@ function jobModal(job) {
     </div>
   `);
   let discType = j.discount?.type || 'pct';
+  let jobColorPick = j.color || (isNew ? JOB_COLORS[DB.state.jobs.length % JOB_COLORS.length] : '');
+  wireSwatches('jobSwatches', c => jobColorPick = c);
   $$('#discSeg button').forEach(b => b.onclick = () => { discType = b.dataset.t; $$('#discSeg button').forEach(x => x.classList.toggle('active', x === b)); });
   $('#mx').onclick = $('#mcancel').onclick = closeModal;
   if (!isNew) $('#delJob').onclick = () => {
@@ -386,9 +419,10 @@ function jobModal(job) {
       billingAddress: $('#f_addr').value.trim(), contact: $('#f_contact').value.trim(), contactEmail: $('#f_email').value.trim(),
       shootDays: days, notes: $('#f_notes').value.trim(),
       discount: { type: discType, value: +$('#f_disc').value || 0 },
+      color: jobColorPick || JOB_COLORS[DB.state.jobs.length % JOB_COLORS.length],
     };
     if (isNew) {
-      const nj = { id: DB.uid('job'), color: JOB_COLORS[DB.state.jobs.length % JOB_COLORS.length], nodes: [], createdAt: Date.now(), ...data };
+      const nj = { id: DB.uid('job'), nodes: [], createdAt: Date.now(), ...data };
       DB.state.jobs.push(nj);
       DB.commit('job-create'); closeModal(); go('board', { jobId: nj.id }); toast('Job created — drag gear onto the board');
     } else {
@@ -416,7 +450,7 @@ function viewBoard(v) {
     <div class="board-top glass">
       <button class="btn sm ghost back" id="bBack">${ICONS.back} Jobs</button>
       <div class="board-title">
-        <div class="t">${esc(job.name)}</div>
+        <div class="t"><span class="dot" style="background:${jobColor(job)};display:inline-block;margin-right:7px"></span>${esc(job.name)}</div>
         <div class="s">
           <span>${esc(job.prodCo || '')}</span>
           ${job.po ? `<span>PO <b>${esc(job.po)}</b></span>` : ''}
@@ -580,8 +614,9 @@ function nodeHTML(job, n) {
   const thumb = !isKit && thumbOf(ref) ? `<img src="${thumbOf(ref)}" alt="">` : (isKit ? ICONS.kit : ICONS.box);
   const rate = nodeDayRate(n);
   const avail = isKit ? kitAvailableAcross(ref, job.shootDays, job.id) : availableAcross(n.refId, job.shootDays, job.id);
+  const kc = isKit && ref.color ? ref.color : '';
   return `
-  <div class="gnode ${isKit ? 'kit' : ''}" data-node="${n.id}" style="left:${n.x}px;top:${n.y}px">
+  <div class="gnode ${isKit ? 'kit' : ''}" data-node="${n.id}" style="left:${n.x}px;top:${n.y}px${kc ? `;border-color:${kc}88;box-shadow:var(--shadow-1),inset 0 2px 0 ${kc}` : ''}">
     <div class="gnode-head" data-drag>
       <div class="gnode-thumb">${thumb}</div>
       <div class="gnode-name"><div class="t">${esc(ref.name)}</div><div class="s">${isKit ? 'Kit · ' + (ref.items?.length || 0) + ' items' : esc(ref.category || 'Gear')}</div></div>
@@ -652,7 +687,7 @@ function renderDrawer(job) {
   ];
   list.innerHTML = items.length ? items.map(it => `
     <div class="ditem ${it.avail <= 0 ? 'depleted' : ''}" data-kind="${it.kind}" data-ref="${it.ref.id}">
-      <div class="row-thumb">${it.kind === 'gear' && thumbOf(it.ref) ? `<img src="${thumbOf(it.ref)}" alt="">` : (it.kind === 'kit' ? ICONS.kit : ICONS.box)}</div>
+      <div class="row-thumb" ${it.kind === 'kit' && it.ref.color ? `style="color:${it.ref.color};border-color:${it.ref.color}66"` : ''}>${it.kind === 'gear' && thumbOf(it.ref) ? `<img src="${thumbOf(it.ref)}" alt="">` : (it.kind === 'kit' ? ICONS.kit : ICONS.box)}</div>
       <div class="m"><div class="t">${esc(it.ref.name)}</div><div class="s">${it.avail} available${can('viewRates') ? ' · ' + fmtMoney(it.kind === 'kit' ? kitDayRate(it.ref) : (it.ref.dailyRate || 0)) + '/day' : ''}</div></div>
       <button class="add" data-add title="Add to job">＋</button>
     </div>`).join('')
@@ -778,9 +813,9 @@ function renderKitList(kits) {
   if (!kits.length) return `<div class="empty glass card"><div class="glyph">🧰</div><h3>No kits yet</h3><p>Group gear into a kit — like a full camera package — and drop the whole thing onto a job in one move.</p></div>`;
   return `<div class="list">${kits.map(k => `
     <div class="row-card glass" data-kit="${k.id}">
-      <div class="row-thumb">${ICONS.kit}</div>
+      <div class="row-thumb" ${k.color ? `style="color:${k.color};border-color:${k.color}66"` : ''}>${ICONS.kit}</div>
       <div class="row-main">
-        <div class="t">${esc(k.name)}</div>
+        <div class="t">${k.color ? `<span class="dot" style="background:${k.color};display:inline-block;margin-right:6px"></span>` : ''}${esc(k.name)}</div>
         <div class="s">${(k.items || []).length} items — ${(k.items || []).slice(0, 3).map(i => esc(getGear(i.gearId)?.name || '?')).join(', ')}${(k.items || []).length > 3 ? '…' : ''}</div>
       </div>
       <div class="row-side">${can('viewRates') ? `<span class="money big">${fmtMoney(kitDayRate(k))}/day</span>` : ''}</div>
@@ -809,7 +844,7 @@ function gearProfile(gearId) {
       </div>
       ${jobsUsing.length ? `<div style="margin-top:16px"><div class="field"><label>On jobs</label></div><div class="list">${jobsUsing.map(j => `
         <div class="row-card glass" data-goto-job="${j.id}" style="padding:10px 14px">
-          <span class="dot" style="background:${j.color}"></span>
+          <span class="dot" style="background:${jobColor(j)}"></span>
           <div class="row-main"><div class="t" style="font-size:13px">${esc(j.name)}</div><div class="s">${jobGearUnits(j, g.id)} unit${jobGearUnits(j, g.id) === 1 ? '' : 's'} · ${jobStatus(j)}</div></div>
         </div>`).join('')}</div></div>` : ''}
     </div>
@@ -912,6 +947,10 @@ function kitModal(k) {
         </div>
       </div>
       <div class="field"><label>Kit day rate ($ — leave blank to use sum of contents)</label><input id="k_rate" type="number" min="0" step="0.01" value="${kit.dailyRate}" placeholder="${fmtMoney(items.reduce((s, it) => s + (getGear(it.gearId)?.dailyRate || 0) * it.qty, 0))} from contents"></div>
+      <div class="field"><label>Colour tag</label>
+        ${swatchesHTML('kitSwatches', kit.color || '', { allowNone: true })}
+        <span class="hint">A tagged kit colours its node on the board — and any job it's assigned to takes this colour, so you can see which kit is on which job at a glance.</span>
+      </div>
     </div>
     <div class="modal-foot">
       ${!isNew && can('manageGear') ? `<button class="btn danger" id="delKit" style="margin-right:auto">Delete</button>` : ''}
@@ -934,6 +973,8 @@ function kitModal(k) {
     });
   };
   drawItems();
+  let kitColorPick = kit.color || '';
+  wireSwatches('kitSwatches', c => kitColorPick = c);
   $('#k_add', m).onclick = () => {
     const id = $('#k_pick', m).value; if (!id) return;
     const ex = items.find(i => i.gearId === id);
@@ -950,7 +991,7 @@ function kitModal(k) {
     const name = $('#k_name', m).value.trim();
     if (!name) { $('#k_name', m).focus(); return; }
     const rate = $('#k_rate', m).value;
-    const data = { name, items, dailyRate: rate === '' ? '' : +rate, notes: '' };
+    const data = { name, items, dailyRate: rate === '' ? '' : +rate, color: kitColorPick, notes: '' };
     if (isNew) DB.state.kits.push({ id: DB.uid('k'), createdAt: Date.now(), ...data });
     else Object.assign(k, data);
     DB.commit('kit-save'); closeModal(); render(); toast('Kit saved');
@@ -978,7 +1019,7 @@ function viewCalendar(v) {
     cells.push(`
       <div class="cal-cell ${inMonth ? '' : 'other'} ${di === t ? 'today' : ''}">
         <div class="d">${d.getDate()}</div>
-        ${jobs.map(j => `<button class="cal-chip" data-cjob="${j.id}" title="${esc(j.name)}"><span class="dot" style="background:${j.color}"></span><span>${esc(j.name)}</span></button>`).join('')}
+        ${jobs.map(j => `<button class="cal-chip" data-cjob="${j.id}" title="${esc(j.name)}"><span class="dot" style="background:${jobColor(j)}"></span><span>${esc(j.name)}</span></button>`).join('')}
       </div>`);
   }
   v.innerHTML = `
