@@ -556,12 +556,13 @@ function setZoom(z, cx, cy) {
   applyZoom();
   wrap.scrollLeft = canvasX * z - fx;
   wrap.scrollTop = canvasY * z - fy;
-  updateMinimap();
+  updateMinimapView();
 }
+/** Full minimap rebuild (node dots + viewport). Call after renders/zoom, not on scroll. */
 function updateMinimap() {
-  const mm = $('#minimap'), wrap = $('#canvasWrap');
+  const mm = $('#minimap');
   const job = getJob(route.jobId);
-  if (!mm || !wrap || !job) return;
+  if (!mm || !job) return;
   const sx = mm.clientWidth / CANVAS_W, sy = mm.clientHeight / CANVAS_H;
   $$('.mm-node', mm).forEach(e => e.remove());
   for (const n of (job.nodes || [])) {
@@ -571,7 +572,13 @@ function updateMinimap() {
     d.style.cssText = `left:${n.x * sx}px;top:${n.y * sy}px;background:${kc}`;
     mm.appendChild(d);
   }
-  const vp = $('#mmVp');
+  updateMinimapView();
+}
+/** Cheap: only reposition the viewport rectangle (safe to call every frame). */
+function updateMinimapView() {
+  const mm = $('#minimap'), wrap = $('#canvasWrap'), vp = $('#mmVp');
+  if (!mm || !wrap || !vp) return;
+  const sx = mm.clientWidth / CANVAS_W, sy = mm.clientHeight / CANVAS_H;
   vp.style.left = (wrap.scrollLeft / boardZoom * sx) + 'px';
   vp.style.top = (wrap.scrollTop / boardZoom * sy) + 'px';
   vp.style.width = Math.min(mm.clientWidth, wrap.clientWidth / boardZoom * sx) + 'px';
@@ -582,7 +589,12 @@ function setupCanvasView(job) {
   drawLinks(job);
   updateMinimap();
   const wrap = $('#canvasWrap');
-  wrap.addEventListener('scroll', () => requestAnimationFrame(updateMinimap), { passive: true });
+  let scrollRaf = false;
+  wrap.addEventListener('scroll', () => {
+    if (scrollRaf) return;
+    scrollRaf = true;
+    requestAnimationFrame(() => { scrollRaf = false; updateMinimapView(); });
+  }, { passive: true });
   wrap.addEventListener('wheel', e => {
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(boardZoom * (e.deltaY < 0 ? 1.08 : 0.92), e.clientX, e.clientY); }
   }, { passive: false });
@@ -597,7 +609,7 @@ function setupCanvasView(job) {
   };
   mm.addEventListener('pointerdown', e => {
     e.preventDefault(); nav(e);
-    mm.setPointerCapture(e.pointerId);
+    try { mm.setPointerCapture(e.pointerId); } catch { /* synthetic/stale pointer */ }
     const mv = e2 => nav(e2);
     const up = () => { mm.removeEventListener('pointermove', mv); mm.removeEventListener('pointerup', up); };
     mm.addEventListener('pointermove', mv);
@@ -814,19 +826,28 @@ function wireNodes(job) {
       if (ev.target.closest('button')) return;
       if (!can('manageJobs')) return;
       ev.preventDefault();
-      head.setPointerCapture(ev.pointerId);
+      try { head.setPointerCapture(ev.pointerId); } catch { /* synthetic/stale pointer */ }
       const startX = ev.clientX, startY = ev.clientY, ox = node.x, oy = node.y;
       el.classList.add('dragging');
-      const move = e2 => {
-        node.x = Math.max(0, Math.min(CANVAS_W - 220, ox + (e2.clientX - startX) / boardZoom));
-        node.y = Math.max(0, Math.min(CANVAS_H - 90, oy + (e2.clientY - startY) / boardZoom));
+      /* cache what the per-frame update needs; apply at most once per frame */
+      const kids = $$(`.gchild[data-parent="${node.id}"]`);
+      const hasWires = (job.nodes || []).some(n => n.kind === 'kit' && n.expanded);
+      let lastEvt = null, raf = false;
+      const apply = () => {
+        raf = false;
+        if (!lastEvt) return;
+        node.x = Math.max(0, Math.min(CANVAS_W - 220, ox + (lastEvt.clientX - startX) / boardZoom));
+        node.y = Math.max(0, Math.min(CANVAS_H - 90, oy + (lastEvt.clientY - startY) / boardZoom));
         el.style.left = node.x + 'px'; el.style.top = node.y + 'px';
-        const kids = $$(`.gchild[data-parent="${node.id}"]`);
         kids.forEach(k => {
           const p = childPos(node, +k.dataset.ci, kids.length);
           k.style.left = p.x + 'px'; k.style.top = p.y + 'px';
         });
-        drawLinks(job);
+        if (hasWires) drawLinks(job);
+      };
+      const move = e2 => {
+        lastEvt = e2;
+        if (!raf) { raf = true; requestAnimationFrame(apply); }
       };
       const up = () => {
         head.removeEventListener('pointermove', move);
@@ -889,7 +910,7 @@ function renderDrawer(job) {
       const refName = (kind === 'kit' ? getKit(refId) : getGear(refId))?.name || '';
       let ghost = null;
       const startX = ev.clientX, startY = ev.clientY;
-      el.setPointerCapture(ev.pointerId);
+      try { el.setPointerCapture(ev.pointerId); } catch { /* synthetic/stale pointer */ }
       const move = e2 => {
         if (!ghost && Math.hypot(e2.clientX - startX, e2.clientY - startY) > 8) {
           ghost = document.createElement('div');
