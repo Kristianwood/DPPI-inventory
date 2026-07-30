@@ -18,13 +18,22 @@ Takes about 5 minutes, one time.
 2. Paste the entire contents of `supabase-schema.sql` (in this folder) and press **Run**.
 
 ## 3. Turn on email codes (no passwords)
-1. **Authentication → Providers → Email**: make sure Email is enabled.
-2. That's it — the app signs people in with a 6-digit code emailed to them.
+1. **Authentication → Sign In / Providers → Email**: make sure Email is enabled.
+2. **Authentication → Emails (email templates) → Magic Link**: make sure the message
+   body includes the one-time code, e.g.:
+
+   ```html
+   <h2>Your DPPI sign-in code</h2>
+   <p>Enter this code in the app: <b>{{ .Token }}</b></p>
+   ```
+
+   (The default template only contains a link — the app uses the 6-digit
+   `{{ .Token }}` code instead, which works much better on iPhone home-screen apps.)
 
 ## 4. Connect the app
-1. In Supabase: **Project Settings → API** — copy the **Project URL** and the **anon public** key.
-2. In the DPPI app: **Settings → Cloud sync** — paste both, press **Save & Connect**.
-3. Sign in with your email and the code it sends you.
+The project URL and public key are already built into the app — on any device,
+just open **Settings → Cloud sync → Sign in**, enter your email, and type in the
+code it sends you. Done.
 
 The **first person to sign in becomes the owner.** Everyone who signs in after
 starts as a read-only *viewer* until you promote them:
@@ -32,12 +41,10 @@ starts as a read-only *viewer* until you promote them:
 `editor` or `admin` (they can then make changes that sync).
 
 ## 5. Other devices
-Open the same site on each device, enter the same URL + anon key in Settings
-(one time per device), sign in — everything stays in sync automatically,
-including gear photos, jobs, invoices and team permissions.
+Open <https://kristianwood.github.io/DPPI-inventory/> on each device and sign in —
+everything stays in sync automatically, including gear photos, jobs, invoices
+and team permissions.
 
-## Hosting the site
-Any static host works (GitHub Pages, Netlify, …). Upload this folder as-is.
 On iPhone/iPad: open the site in Safari → Share → **Add to Home Screen** and it
 installs like a native app. Same on Mac with Safari (File → Add to Dock) or
 Chrome (Install).

@@ -7,6 +7,11 @@
 
 const DB = (() => {
   const KEY = 'dppi_state_v1';
+  // DPPI's own Supabase project (public/publishable key — safe to embed).
+  const DEFAULT_SYNC = {
+    url: 'https://jftjdswxhjfvfiskclku.supabase.co',
+    anonKey: 'sb_publishable_Uqz6KiniwHzYpeAFK-FoPA_wTv_j0Ru'
+  };
   const DEVICE_ID = (() => {
     let d = localStorage.getItem('dppi_device');
     if (!d) { d = 'dev_' + Math.random().toString(36).slice(2, 10); localStorage.setItem('dppi_device', d); }
@@ -29,7 +34,7 @@ const DB = (() => {
         taxLabel: 'HST',
         taxPct: 13,
         counters: { quote: 0, estimate: 0, invoice: 0 },
-        sync: { url: '', anonKey: '' }
+        sync: { ...DEFAULT_SYNC }
       }
     };
   }
@@ -51,6 +56,8 @@ const DB = (() => {
     const d = defaultState();
     for (const k of Object.keys(d)) if (state[k] === undefined) state[k] = d[k];
     for (const k of Object.keys(d.settings)) if (state.settings[k] === undefined) state.settings[k] = d.settings[k];
+    // adopt the built-in sync config on devices that predate it (or were left blank)
+    if (!state.settings.sync || !state.settings.sync.url) state.settings.sync = { ...DEFAULT_SYNC };
     return state;
   }
 
