@@ -97,8 +97,19 @@ function kitDayRate(kit) {
   if (kit.dailyRate != null && kit.dailyRate !== '') return +kit.dailyRate;
   return (kit.items || []).reduce((s, it) => s + ((getGear(it.gearId)?.dailyRate || 0) * it.qty), 0);
 }
+/** value of a kit node's disabled pieces (per single kit) */
+function kitDisabledValue(node, kit) {
+  return Object.keys(node.disabled || {}).filter(id => node.disabled[id]).reduce((s, id) => {
+    const it = (kit.items || []).find(i => i.gearId === id);
+    return s + (it ? (getGear(id)?.dailyRate || 0) * it.qty : 0);
+  }, 0);
+}
 function nodeDayRate(node) {
-  if (node.kind === 'kit') { const k = getKit(node.refId); return k ? kitDayRate(k) * node.qty : 0; }
+  if (node.kind === 'kit') {
+    const k = getKit(node.refId);
+    if (!k) return 0;
+    return Math.max(0, kitDayRate(k) - kitDisabledValue(node, k)) * node.qty;
+  }
   const g = getGear(node.refId); return g ? (g.dailyRate || 0) * node.qty : 0;
 }
 function jobDayRate(job) { return (job.nodes || []).reduce((s, n) => s + nodeDayRate(n), 0); }
@@ -120,7 +131,7 @@ function jobGearUnits(job, gearId) {
     if (node.kind === 'kit') {
       const kit = getKit(node.refId);
       const inKit = kit?.items?.find(i => i.gearId === gearId);
-      if (inKit) n += inKit.qty * node.qty;
+      if (inKit && !(node.disabled && node.disabled[gearId])) n += inKit.qty * node.qty;
     }
   }
   return n;
@@ -474,10 +485,23 @@ function viewBoard(v) {
     </div>
     <div class="board-body">
     ${mode === 'usage' ? `<div class="usage-wrap glass" id="usageWrap"></div>` : `
-      <div class="canvas-wrap glass" id="canvasWrap">
-        <div class="canvas" id="canvas">
-          ${(job.nodes || []).map(n => nodeHTML(job, n)).join('')}
-          ${!(job.nodes || []).length ? `<div class="canvas-empty"><div class="inner"><div class="big">No gear on this job yet</div><p>Drag items in from the gear drawer${window.matchMedia('(max-width:900px)').matches ? ' below' : ''} — or tap +</p></div></div>` : ''}
+      <div class="canvas-area">
+        <div class="canvas-wrap glass" id="canvasWrap">
+          <div class="canvas-sizer" id="canvasSizer">
+            <div class="canvas" id="canvas">
+              <svg id="linksSvg" aria-hidden="true"></svg>
+              ${(job.nodes || []).map(n => nodeHTML(job, n) + childNodesHTML(job, n)).join('')}
+              ${!(job.nodes || []).length ? `<div class="canvas-empty"><div class="inner"><div class="big">No gear on this job yet</div><p>Drag items in from the gear drawer${window.matchMedia('(max-width:900px)').matches ? ' below' : ''} — or tap +</p></div></div>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="canvas-hud glass">
+          <div class="minimap" id="minimap" title="Drag to move around the board"><div class="mm-vp" id="mmVp"></div></div>
+          <div class="zoomrow">
+            <button class="icon-btn" id="zoomOut" aria-label="Zoom out">−</button>
+            <button class="btn ghost sm" id="zoomPct" title="Reset zoom">100%</button>
+            <button class="icon-btn" id="zoomIn" aria-label="Zoom in">+</button>
+          </div>
         </div>
       </div>
       ${can('manageJobs') ? `
@@ -501,11 +525,104 @@ function viewBoard(v) {
 
   /* node interactions */
   wireNodes(job);
+  setupCanvasView(job);
   if (can('manageJobs')) {
     renderDrawer(job);
     let dT;
     $('#drawerSearch').oninput = () => { clearTimeout(dT); dT = setTimeout(() => renderDrawer(job), 120); };
   }
+}
+
+/* ---------- canvas zoom, minimap & node wires ---------- */
+let boardZoom = 1;
+
+function applyZoom() {
+  const sizer = $('#canvasSizer'), canvas = $('#canvas');
+  if (!sizer || !canvas) return;
+  sizer.style.width = (CANVAS_W * boardZoom) + 'px';
+  sizer.style.height = (CANVAS_H * boardZoom) + 'px';
+  canvas.style.transform = `scale(${boardZoom})`;
+  const pct = $('#zoomPct'); if (pct) pct.textContent = Math.round(boardZoom * 100) + '%';
+}
+function setZoom(z, cx, cy) {
+  const wrap = $('#canvasWrap'); if (!wrap) return;
+  z = Math.max(0.35, Math.min(1.75, z));
+  const rect = wrap.getBoundingClientRect();
+  const fx = cx != null ? cx - rect.left : rect.width / 2;
+  const fy = cy != null ? cy - rect.top : rect.height / 2;
+  const canvasX = (wrap.scrollLeft + fx) / boardZoom;
+  const canvasY = (wrap.scrollTop + fy) / boardZoom;
+  boardZoom = z;
+  applyZoom();
+  wrap.scrollLeft = canvasX * z - fx;
+  wrap.scrollTop = canvasY * z - fy;
+  updateMinimap();
+}
+function updateMinimap() {
+  const mm = $('#minimap'), wrap = $('#canvasWrap');
+  const job = getJob(route.jobId);
+  if (!mm || !wrap || !job) return;
+  const sx = mm.clientWidth / CANVAS_W, sy = mm.clientHeight / CANVAS_H;
+  $$('.mm-node', mm).forEach(e => e.remove());
+  for (const n of (job.nodes || [])) {
+    const d = document.createElement('div');
+    d.className = 'mm-node';
+    const kc = n.kind === 'kit' ? (getKit(n.refId)?.color || '#8B5CF6') : 'rgba(255,255,255,.55)';
+    d.style.cssText = `left:${n.x * sx}px;top:${n.y * sy}px;background:${kc}`;
+    mm.appendChild(d);
+  }
+  const vp = $('#mmVp');
+  vp.style.left = (wrap.scrollLeft / boardZoom * sx) + 'px';
+  vp.style.top = (wrap.scrollTop / boardZoom * sy) + 'px';
+  vp.style.width = Math.min(mm.clientWidth, wrap.clientWidth / boardZoom * sx) + 'px';
+  vp.style.height = Math.min(mm.clientHeight, wrap.clientHeight / boardZoom * sy) + 'px';
+}
+function setupCanvasView(job) {
+  applyZoom();
+  drawLinks(job);
+  updateMinimap();
+  const wrap = $('#canvasWrap');
+  wrap.addEventListener('scroll', () => requestAnimationFrame(updateMinimap), { passive: true });
+  wrap.addEventListener('wheel', e => {
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(boardZoom * (e.deltaY < 0 ? 1.08 : 0.92), e.clientX, e.clientY); }
+  }, { passive: false });
+  $('#zoomIn').onclick = () => setZoom(boardZoom * 1.2);
+  $('#zoomOut').onclick = () => setZoom(boardZoom / 1.2);
+  $('#zoomPct').onclick = () => setZoom(1);
+  const mm = $('#minimap');
+  const nav = e => {
+    const r = mm.getBoundingClientRect();
+    wrap.scrollLeft = (e.clientX - r.left) / (mm.clientWidth / CANVAS_W) * boardZoom - wrap.clientWidth / 2;
+    wrap.scrollTop = (e.clientY - r.top) / (mm.clientHeight / CANVAS_H) * boardZoom - wrap.clientHeight / 2;
+  };
+  mm.addEventListener('pointerdown', e => {
+    e.preventDefault(); nav(e);
+    mm.setPointerCapture(e.pointerId);
+    const mv = e2 => nav(e2);
+    const up = () => { mm.removeEventListener('pointermove', mv); mm.removeEventListener('pointerup', up); };
+    mm.addEventListener('pointermove', mv);
+    mm.addEventListener('pointerup', up);
+  });
+}
+/** Wires from each expanded kit down to its gear pieces (top → bottom). */
+function drawLinks(job) {
+  const svg = $('#linksSvg'); if (!svg) return;
+  let html = '';
+  for (const n of (job.nodes || [])) {
+    if (n.kind !== 'kit' || !n.expanded) continue;
+    const kit = getKit(n.refId); if (!kit) continue;
+    const el = $(`.gnode[data-node="${n.id}"]`);
+    const kh = el ? el.offsetHeight : 96;
+    const x1 = n.x + 108, y1 = n.y + kh;
+    (kit.items || []).forEach((it, i) => {
+      const p = childPos(n, i, kit.items.length);
+      const x2 = p.x + CHILD_W / 2, y2 = p.y;
+      const dis = !!(n.disabled && n.disabled[it.gearId]);
+      const c = dis ? 'rgba(148,163,173,.35)' : (kit.color || 'rgba(45,212,191,.8)');
+      html += `<path class="wire ${dis ? 'off' : ''}" d="M${x1},${y1} C${x1},${y1 + 46} ${x2},${y2 - 46} ${x2},${y2}" style="stroke:${c}"></path>`;
+    });
+  }
+  svg.innerHTML = html;
 }
 
 /* ---------- crew assignment ---------- */
@@ -627,8 +744,39 @@ function nodeHTML(job, n) {
       <div class="qty-step"><button data-q="-1" aria-label="Less">−</button><span class="q">${n.qty}</span><button data-q="1" aria-label="More" ${avail <= 0 ? 'disabled' : ''}>+</button></div>` : `<span class="tag free">×${n.qty}</span>`}
       ${can('viewRates') ? `<span class="gnode-rate">${fmtMoney(rate)}/day</span>` : ''}
     </div>
-    ${isKit ? `<div class="gnode-kitlist">${(ref.items || []).slice(0, 4).map(it => `${it.qty}× ${esc(getGear(it.gearId)?.name || '?')}`).join('<br>')}${ref.items?.length > 4 ? '<br>…' : ''}</div>` : ''}
+    ${isKit && !n.expanded ? `<div class="gnode-kitlist">${(ref.items || []).slice(0, 4).map(it => `<span ${n.disabled?.[it.gearId] ? 'style="text-decoration:line-through;opacity:.5"' : ''}>${it.qty}× ${esc(getGear(it.gearId)?.name || '?')}</span>`).join('<br>')}${ref.items?.length > 4 ? '<br>…' : ''}</div>` : ''}
+    ${isKit ? `<button class="gexpand" data-expand title="${n.expanded ? 'Collapse kit' : 'Expand kit into its gear'}">${n.expanded ? 'Collapse ▴' : 'Expand ▾'}</button>` : ''}
   </div>`;
+}
+
+/* expanded-kit child positioning (children fan out below the kit, wires flow top→bottom) */
+const CANVAS_W = 2200, CANVAS_H = 1400;
+const CHILD_W = 178, CHILD_GAP = 14;
+function childPos(n, i, count) {
+  const span = count * CHILD_W + (count - 1) * CHILD_GAP;
+  const x = Math.max(0, Math.min(CANVAS_W - CHILD_W, n.x + 108 - span / 2 + i * (CHILD_W + CHILD_GAP)));
+  return { x, y: Math.min(CANVAS_H - 70, n.y + 168) };
+}
+function childNodesHTML(job, n) {
+  if (n.kind !== 'kit' || !n.expanded) return '';
+  const kit = getKit(n.refId); if (!kit) return '';
+  const items = kit.items || [];
+  return items.map((it, i) => {
+    const g = getGear(it.gearId); if (!g) return '';
+    const p = childPos(n, i, items.length);
+    const dis = !!(n.disabled && n.disabled[it.gearId]);
+    return `
+    <div class="gchild ${dis ? 'off' : ''}" data-parent="${n.id}" data-ci="${i}" style="left:${p.x}px;top:${p.y}px${kit.color && !dis ? `;border-color:${kit.color}66` : ''}">
+      <div class="row-thumb">${thumbOf(g) ? `<img src="${thumbOf(g)}" alt="">` : ICONS.box}</div>
+      <div class="m">
+        <div class="t">${esc(g.name)}</div>
+        <div class="s">${it.qty * n.qty}×${can('viewRates') ? ' · ' + fmtMoney((g.dailyRate || 0) * it.qty * n.qty) + '/day' : ''}</div>
+      </div>
+      ${can('manageJobs')
+        ? `<button class="gswitch ${dis ? '' : 'on'}" data-toggle="${it.gearId}" role="switch" aria-checked="${!dis}" title="${dis ? 'Enable this piece' : 'Disable this piece'}"><span></span></button>`
+        : (dis ? '<span class="tag bad">off</span>' : '')}
+    </div>`;
+  }).join('');
 }
 
 function wireNodes(job) {
@@ -638,7 +786,17 @@ function wireNodes(job) {
     const node = job.nodes.find(n => n.id === el.dataset.node);
     if (!node) return;
     const rm = $('[data-rm]', el);
-    if (rm) rm.onclick = e => { e.stopPropagation(); job.nodes = job.nodes.filter(n => n.id !== node.id); DB.commit('node-rm'); render(); };
+    if (rm) rm.onclick = e => {
+      e.stopPropagation();
+      job.nodes = job.nodes.filter(n => n.id !== node.id);
+      DB.commit('node-rm'); render();
+    };
+    const exp = $('[data-expand]', el);
+    if (exp) exp.onclick = e => {
+      e.stopPropagation();
+      node.expanded = !node.expanded;
+      DB.commit('node-expand'); render();
+    };
     $$('[data-q]', el).forEach(b => b.onclick = e => {
       e.stopPropagation();
       const d = +b.dataset.q;
@@ -660,19 +818,35 @@ function wireNodes(job) {
       const startX = ev.clientX, startY = ev.clientY, ox = node.x, oy = node.y;
       el.classList.add('dragging');
       const move = e2 => {
-        node.x = Math.max(0, Math.min(1980, ox + e2.clientX - startX));
-        node.y = Math.max(0, Math.min(1310, oy + e2.clientY - startY));
+        node.x = Math.max(0, Math.min(CANVAS_W - 220, ox + (e2.clientX - startX) / boardZoom));
+        node.y = Math.max(0, Math.min(CANVAS_H - 90, oy + (e2.clientY - startY) / boardZoom));
         el.style.left = node.x + 'px'; el.style.top = node.y + 'px';
+        const kids = $$(`.gchild[data-parent="${node.id}"]`);
+        kids.forEach(k => {
+          const p = childPos(node, +k.dataset.ci, kids.length);
+          k.style.left = p.x + 'px'; k.style.top = p.y + 'px';
+        });
+        drawLinks(job);
       };
       const up = () => {
         head.removeEventListener('pointermove', move);
         head.removeEventListener('pointerup', up);
         el.classList.remove('dragging');
         DB.commit('node-move');
+        updateMinimap();
       };
       head.addEventListener('pointermove', move);
       head.addEventListener('pointerup', up);
     });
+  });
+  /* enable/disable pieces of an expanded kit */
+  $$('.gchild [data-toggle]', canvas).forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const parent = job.nodes.find(n => n.id === b.closest('.gchild').dataset.parent);
+    if (!parent) return;
+    parent.disabled = parent.disabled || {};
+    parent.disabled[b.dataset.toggle] = !parent.disabled[b.dataset.toggle];
+    DB.commit('kit-piece-toggle'); render();
   });
 }
 
@@ -705,7 +879,7 @@ function renderDrawer(job) {
     $('[data-add]', el).onclick = e => {
       e.stopPropagation();
       const wrap = $('#canvasWrap');
-      addNode(60 + wrap.scrollLeft + Math.random() * 220, 60 + wrap.scrollTop + Math.random() * 160);
+      addNode(60 + wrap.scrollLeft / boardZoom + Math.random() * 220, 60 + wrap.scrollTop / boardZoom + Math.random() * 160);
     };
     /* drag from drawer to canvas */
     el.addEventListener('pointerdown', ev => {
@@ -735,8 +909,9 @@ function renderDrawer(job) {
           const wrap = $('#canvasWrap');
           const r = wrap.getBoundingClientRect();
           if (e2.clientX >= r.left && e2.clientX <= r.right && e2.clientY >= r.top && e2.clientY <= r.bottom) {
-            const x = Math.max(0, e2.clientX - r.left + wrap.scrollLeft - 108);
-            const y = Math.max(0, e2.clientY - r.top + wrap.scrollTop - 30);
+            const cr = $('#canvas').getBoundingClientRect();
+            const x = Math.max(0, (e2.clientX - cr.left) / boardZoom - 108);
+            const y = Math.max(0, (e2.clientY - cr.top) / boardZoom - 30);
             addNode(x, y);
           }
         }
@@ -1100,7 +1275,7 @@ function invoiceModal(inv, fromJob) {
     const days = (j.shootDays || []).length || 1;
     return (j.nodes || []).map(n => {
       const ref = n.kind === 'kit' ? getKit(n.refId) : getGear(n.refId);
-      return { desc: (ref?.name || '?') + (n.kind === 'kit' ? ' (kit)' : ''), qty: n.qty, days, rate: n.kind === 'kit' ? kitDayRate(ref) : (ref?.dailyRate || 0) };
+      return { desc: (ref?.name || '?') + (n.kind === 'kit' ? ' (kit)' : ''), qty: n.qty, days, rate: n.kind === 'kit' ? nodeDayRate(n) / n.qty : (ref?.dailyRate || 0) };
     });
   };
   const actualLines = j => (j.nodes || []).map(n => {
