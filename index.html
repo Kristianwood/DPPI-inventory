@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0A0F12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DPPI">
+<title>DPPI Inventory</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-palette="#0D9488,#8B5CF6,#D97706,#0284C7,#F43F5E">
+
+<!-- ambient background -->
+<div class="ambient" aria-hidden="true">
+  <div class="orb orb-a"></div>
+  <div class="orb orb-b"></div>
+  <div class="orb orb-c"></div>
+</div>
+
+<!-- local sign-in / first-run (rendered by app.js) -->
+<div id="gate" class="gate hidden"></div>
+
+<div id="shell" class="shell hidden">
+  <!-- sidebar (desktop) / bottom bar (mobile) -->
+  <nav id="nav" class="nav glass" aria-label="Main">
+    <div class="nav-brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26"><circle cx="10" cy="10" r="5" fill="var(--teal)"/><circle cx="23" cy="14" r="3.5" fill="var(--teal-dim)"/><circle cx="14" cy="24" r="3" fill="var(--teal-dim)"/><path d="M13 12l7 2M12 14l2 7" stroke="var(--teal-line)" stroke-width="1.5"/></svg>
+      </div>
+      <div class="brand-text">DPPI<span>Inventory</span></div>
+    </div>
+    <div class="nav-items" id="navItems"></div>
+    <div class="nav-foot">
+      <button class="nav-user" id="navUser" title="Switch user"></button>
+      <div class="sync-dot" id="syncDot" title="Sync status"></div>
+    </div>
+  </nav>
+
+  <main id="view" class="view" tabindex="-1"></main>
+</div>
+
+<!-- modal root -->
+<div id="modalRoot"></div>
+<!-- toast root -->
+<div id="toastRoot" class="toast-root" aria-live="polite"></div>
+<!-- print root (invoice printing) -->
+<div id="printRoot" class="print-root" aria-hidden="true"></div>
+
+<script src="db.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
