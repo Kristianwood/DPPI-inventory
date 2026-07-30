@@ -46,14 +46,16 @@ const PERMS = [
   ['viewRates', 'See pricing & revenue'],
   ['manageGear', 'Add / edit gear & kits'],
   ['manageJobs', 'Create jobs & assign gear'],
+  ['logUsage', 'Log gear used on assigned jobs'],
   ['invoices', 'Create quotes & invoices'],
   ['manageTeam', 'Manage team & settings'],
 ];
 const ROLE_PRESETS = {
-  owner: { viewRates: true, manageGear: true, manageJobs: true, invoices: true, manageTeam: true },
-  admin: { viewRates: true, manageGear: true, manageJobs: true, invoices: true, manageTeam: false },
-  tech: { viewRates: false, manageGear: true, manageJobs: true, invoices: false, manageTeam: false },
-  viewer: { viewRates: false, manageGear: false, manageJobs: false, invoices: false, manageTeam: false },
+  owner: { viewRates: true, manageGear: true, manageJobs: true, logUsage: true, invoices: true, manageTeam: true },
+  admin: { viewRates: true, manageGear: true, manageJobs: true, logUsage: true, invoices: true, manageTeam: false },
+  tech: { viewRates: false, manageGear: true, manageJobs: true, logUsage: true, invoices: false, manageTeam: false },
+  crew: { viewRates: false, manageGear: false, manageJobs: false, logUsage: true, invoices: false, manageTeam: false },
+  viewer: { viewRates: false, manageGear: false, manageJobs: false, logUsage: false, invoices: false, manageTeam: false },
 };
 
 let currentUser = null;
@@ -153,6 +155,32 @@ function revenueRange(fromISO, toISO) {
   return s;
 }
 
+/* ---------------- usage tracking (actuals) ---------------- */
+const isOnCrew = job => !!(currentUser && (job.crew || []).includes(currentUser.id));
+const canLogUsage = job => can('logUsage') && (isOnCrew(job) || can('manageJobs'));
+const dayApproved = (job, d) => !!(job.usageApproved && job.usageApproved[d]);
+const dayLogged = (job, d) => !!(job.usage && job.usage[d]);
+const usedOn = (job, d, nodeId) => job.usage?.[d]?.[nodeId] ?? 0;
+function setUsed(job, d, nodeId, qty) {
+  job.usage = job.usage || {};
+  job.usage[d] = job.usage[d] || {};
+  job.usage[d][nodeId] = qty;
+}
+/** per-unit day rate of a node (node rate covers node.qty units) */
+const unitRate = node => node.qty ? nodeDayRate(node) / node.qty : 0;
+/** total unit-days actually used for a node (approved days only unless all=true) */
+function actualUnitDays(job, nodeId, all = false) {
+  let s = 0;
+  for (const d of (job.shootDays || [])) {
+    if (!all && !dayApproved(job, d)) continue;
+    s += usedOn(job, d, nodeId);
+  }
+  return s;
+}
+/** gross billable value of a single day's logged usage */
+function dayUsageValue(job, d) {
+  return (job.nodes || []).reduce((s, n) => s + usedOn(job, d, n.id) * unitRate(n), 0);
+}
 function invoiceTotals(inv) {
   const sub = (inv.lineItems || []).reduce((s, li) => s + (+li.qty || 0) * (+li.days || 1) * (+li.rate || 0), 0);
   const { amount: afterDisc, off } = applyDiscount(sub, inv.discount);
@@ -288,6 +316,7 @@ function viewJobs(v) {
           <div class="s">${esc(j.prodCo || 'No production company')} · ${j.shootDays?.length ? fmtDateShort(j.shootDays[0]) + ' – ' + fmtDateShort(j.shootDays[j.shootDays.length - 1]) + ` · ${t.days} day${t.days === 1 ? '' : 's'}` : 'no dates'}${j.po ? ` · PO ${esc(j.po)}` : ''}</div>
         </div>
         <div class="row-side">
+          ${(j.crew || []).includes(currentUser.id) ? `<span class="tag good">you're on it</span>` : ''}
           ${can('viewRates') ? `<span class="money big">${fmtMoney(t.net)}</span>` : ''}
           <span class="tag ${tagCls}">${st}</span>
         </div>
@@ -377,6 +406,10 @@ function viewBoard(v) {
   if (!job) { go('jobs'); return; }
   const t = jobTotals(job);
   const st = jobStatus(job);
+  const showUsageTab = canLogUsage(job) || can('manageJobs');
+  if (!route.bm) route.bm = (!can('manageJobs') && canLogUsage(job)) ? 'usage' : 'canvas';
+  const mode = route.bm;
+  const crew = (job.crew || []).map(id => DB.state.team.find(u => u.id === id)).filter(Boolean);
 
   v.innerHTML = `
   <div class="board">
@@ -389,6 +422,7 @@ function viewBoard(v) {
           ${job.po ? `<span>PO <b>${esc(job.po)}</b></span>` : ''}
           <span>${t.days} day${t.days === 1 ? '' : 's'} · ${job.shootDays.length ? fmtDateShort(job.shootDays[0]) + ' – ' + fmtDateShort(job.shootDays[job.shootDays.length - 1]) : ''}</span>
           <span class="tag ${st === 'active' ? 'active' : 'free'}">${st}</span>
+          ${crew.length ? `<span class="crew-stack">${crew.slice(0, 4).map(u => `<span class="avatar" title="${esc(u.name)}">${esc(u.name.slice(0, 2).toUpperCase())}</span>`).join('')}${crew.length > 4 ? `<span class="avatar">+${crew.length - 4}</span>` : ''}</span>` : ''}
         </div>
       </div>
       ${can('viewRates') ? `
@@ -398,11 +432,14 @@ function viewBoard(v) {
         <div class="board-metric"><div class="k">Job total</div><div class="v">${fmtMoney(t.net)}</div></div>
       </div>` : ''}
       <div class="page-actions">
+        ${showUsageTab ? `<div class="seg"><button data-bm="canvas" class="${mode === 'canvas' ? 'active' : ''}">Board</button><button data-bm="usage" class="${mode === 'usage' ? 'active' : ''}">Usage</button></div>` : ''}
+        ${can('manageJobs') ? `<button class="btn sm" id="bCrew">${ICONS.team} Crew</button>` : ''}
         ${can('invoices') ? `<button class="btn sm" id="bInvoice">${ICONS.invoices} Invoice</button>` : ''}
         ${can('manageJobs') ? `<button class="btn sm ghost" id="bEdit">Edit</button>` : ''}
       </div>
     </div>
     <div class="board-body">
+    ${mode === 'usage' ? `<div class="usage-wrap glass" id="usageWrap"></div>` : `
       <div class="canvas-wrap glass" id="canvasWrap">
         <div class="canvas" id="canvas">
           ${(job.nodes || []).map(n => nodeHTML(job, n)).join('')}
@@ -416,13 +453,17 @@ function viewBoard(v) {
           <div class="searchbar">${ICONS.search}<input id="drawerSearch" placeholder="Search gear & kits…"></div>
         </div>
         <div class="drawer-list" id="drawerList"></div>
-      </aside>` : ''}
+      </aside>` : ''}`}
     </div>
   </div>`;
 
   $('#bBack').onclick = () => go('jobs');
   if ($('#bEdit')) $('#bEdit').onclick = () => jobModal(job);
   if ($('#bInvoice')) $('#bInvoice').onclick = () => invoiceModal(null, job);
+  if ($('#bCrew')) $('#bCrew').onclick = () => crewModal(job);
+  $$('[data-bm]', v).forEach(b => b.onclick = () => { route.bm = b.dataset.bm; render(); });
+
+  if (mode === 'usage') { renderUsage(job); return; }
 
   /* node interactions */
   wireNodes(job);
@@ -431,6 +472,105 @@ function viewBoard(v) {
     let dT;
     $('#drawerSearch').oninput = () => { clearTimeout(dT); dT = setTimeout(() => renderDrawer(job), 120); };
   }
+}
+
+/* ---------- crew assignment ---------- */
+function crewModal(job) {
+  const m = openModal(`
+    <div class="modal-head"><h2>Crew on ${esc(job.name)}</h2><button class="icon-btn" id="mx">${ICONS.x}</button></div>
+    <div class="modal-body">
+      <p style="font-size:12.5px;color:var(--ink-3);line-height:1.6;margin-bottom:14px">People on the crew can open this job and log what gear was actually used each shoot day. You'll see it live and approve it for billing.</p>
+      <div style="display:flex;flex-direction:column;gap:9px">
+        ${DB.state.team.map(u => `
+          <label style="display:flex;align-items:center;gap:11px;font-size:13.5px;font-weight:600;cursor:pointer;padding:9px 12px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--glass-border)">
+            <input type="checkbox" data-crew="${u.id}" ${(job.crew || []).includes(u.id) ? 'checked' : ''} style="width:17px;height:17px;accent-color:var(--teal)">
+            <span class="avatar">${esc(u.name.slice(0, 2).toUpperCase())}</span>
+            <span style="flex:1">${esc(u.name)}</span>
+            <span class="tag free" style="text-transform:capitalize">${esc(u.role)}</span>
+            ${!u.perms.logUsage ? `<span class="tag warn" title="This role can't log usage — change it in Team">can't log</span>` : ''}
+          </label>`).join('')}
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="msave">Save Crew</button>
+    </div>
+  `);
+  $('#mx', m).onclick = $('#mcancel', m).onclick = closeModal;
+  $('#msave', m).onclick = () => {
+    job.crew = $$('[data-crew]', m).filter(cb => cb.checked).map(cb => cb.dataset.crew);
+    DB.commit('crew-save'); closeModal(); render(); toast('Crew updated');
+  };
+}
+
+/* ---------- usage logging & approval ---------- */
+function renderUsage(job) {
+  const wrap = $('#usageWrap');
+  const days = job.shootDays || [];
+  if (!days.length) { wrap.innerHTML = `<div class="empty"><p>This job has no shoot days.</p></div>`; return; }
+  if (!route.uday || !days.includes(route.uday)) route.uday = days.includes(todayISO()) ? todayISO() : days[0];
+  const d = route.uday;
+  const approved = dayApproved(job, d);
+  const editable = canLogUsage(job) && !approved;
+  const nodes = job.nodes || [];
+  const approver = approved ? DB.state.team.find(u => u.id === job.usageApproved[d].by) : null;
+
+  wrap.innerHTML = `
+    <div class="usage-days">
+      ${days.map(x => `
+        <button class="uday ${x === d ? 'active' : ''}" data-uday="${x}">
+          <span class="ud-date">${fmtDateShort(x)}</span>
+          <span class="ud-state">${dayApproved(job, x) ? '✓ approved' : dayLogged(job, x) ? 'logged' : '—'}</span>
+        </button>`).join('')}
+    </div>
+    <div class="usage-list">
+      ${nodes.length ? nodes.map(n => {
+        const ref = n.kind === 'kit' ? getKit(n.refId) : getGear(n.refId);
+        if (!ref) return '';
+        const used = usedOn(job, d, n.id);
+        return `
+        <div class="usage-row">
+          <div class="row-thumb">${n.kind === 'gear' && thumbOf(ref) ? `<img src="${thumbOf(ref)}" alt="">` : (n.kind === 'kit' ? ICONS.kit : ICONS.box)}</div>
+          <div class="row-main">
+            <div class="t">${esc(ref.name)}${n.kind === 'kit' ? ' <span class="tag free">kit</span>' : ''}</div>
+            <div class="s">${n.qty} on job${can('viewRates') ? ' · ' + fmtMoney(unitRate(n)) + '/day each' : ''}</div>
+          </div>
+          <div class="row-side">
+            <span class="tag ${used > 0 ? 'active' : 'free'}">${used} / ${n.qty} used</span>
+            ${editable ? `
+            <div class="qty-step"><button data-un="${n.id}" data-d="-1" aria-label="Less used">−</button><span class="q">${used}</span><button data-un="${n.id}" data-d="1" aria-label="More used" ${used >= n.qty ? 'disabled' : ''}>+</button></div>` : ''}
+          </div>
+        </div>`;
+      }).join('') : `<div class="empty" style="padding:34px"><p>No gear on this job yet${can('manageJobs') ? ' — add some on the Board tab first' : ''}.</p></div>`}
+    </div>
+    <div class="usage-foot">
+      <div class="uf-left">
+        ${editable && nodes.length ? `<button class="btn sm" id="allUsed">Mark all used</button><button class="btn sm ghost" id="noneUsed">Clear day</button>` : ''}
+        ${approved ? `<span class="tag good">✓ Approved${approver ? ' by ' + esc(approver.name) : ''}</span>` : dayLogged(job, d) ? `<span class="tag warn">Awaiting approval</span>` : `<span class="tag free">Nothing logged yet</span>`}
+      </div>
+      <div class="uf-right">
+        ${can('viewRates') ? `<span class="board-metric"><span class="k">Day billable&nbsp;</span><span class="v">${fmtMoney(dayUsageValue(job, d))}</span></span>` : ''}
+        ${can('invoices') ? (approved
+          ? `<button class="btn sm ghost" id="unapprove">Unapprove</button>`
+          : `<button class="btn sm primary" id="approveDay" ${!dayLogged(job, d) ? 'disabled title="Nothing logged for this day yet"' : ''}>Approve day</button>`) : ''}
+      </div>
+    </div>`;
+
+  $$('[data-uday]', wrap).forEach(b => b.onclick = () => { route.uday = b.dataset.uday; render(); });
+  $$('[data-un]', wrap).forEach(b => b.onclick = () => {
+    const n = nodes.find(x => x.id === b.dataset.un); if (!n) return;
+    const cur = usedOn(job, d, n.id);
+    setUsed(job, d, n.id, Math.max(0, Math.min(n.qty, cur + (+b.dataset.d))));
+    DB.commit('usage'); render();
+  });
+  if ($('#allUsed', wrap)) $('#allUsed', wrap).onclick = () => { nodes.forEach(n => setUsed(job, d, n.id, n.qty)); DB.commit('usage'); render(); };
+  if ($('#noneUsed', wrap)) $('#noneUsed', wrap).onclick = () => { if (job.usage) delete job.usage[d]; DB.commit('usage'); render(); };
+  if ($('#approveDay', wrap)) $('#approveDay', wrap).onclick = () => {
+    job.usageApproved = job.usageApproved || {};
+    job.usageApproved[d] = { by: currentUser.id, at: Date.now() };
+    DB.commit('usage-approve'); render(); toast(fmtDateShort(d) + ' approved for billing');
+  };
+  if ($('#unapprove', wrap)) $('#unapprove', wrap).onclick = () => { delete job.usageApproved[d]; DB.commit('usage-approve'); render(); };
 }
 
 function nodeHTML(job, n) {
@@ -915,13 +1055,22 @@ function invoiceModal(inv, fromJob) {
     lineItems: [], discount: { type: job?.discount?.type || 'pct', value: job?.discount?.value || 0 },
     taxPct: DB.state.settings.taxPct, status: 'draft', notes: '',
   };
-  if (isNew && job) {
-    const days = (job.shootDays || []).length || 1;
-    doc.lineItems = (job.nodes || []).map(n => {
+  const plannedLines = j => {
+    const days = (j.shootDays || []).length || 1;
+    return (j.nodes || []).map(n => {
       const ref = n.kind === 'kit' ? getKit(n.refId) : getGear(n.refId);
       return { desc: (ref?.name || '?') + (n.kind === 'kit' ? ' (kit)' : ''), qty: n.qty, days, rate: n.kind === 'kit' ? kitDayRate(ref) : (ref?.dailyRate || 0) };
     });
-  }
+  };
+  const actualLines = j => (j.nodes || []).map(n => {
+    const ud = actualUnitDays(j, n.id);
+    if (!ud) return null;
+    const ref = n.kind === 'kit' ? getKit(n.refId) : getGear(n.refId);
+    return { desc: (ref?.name || '?') + (n.kind === 'kit' ? ' (kit)' : '') + ' — actual usage', qty: ud, days: 1, rate: unitRate(n) };
+  }).filter(Boolean);
+  const approvedCount = job ? (job.shootDays || []).filter(x => dayApproved(job, x)).length : 0;
+  let basis = (isNew && job && approvedCount > 0) ? 'actual' : 'planned';
+  if (isNew && job) doc.lineItems = basis === 'actual' ? actualLines(job) : plannedLines(job);
 
   const m = openModal(`
     <div class="modal-head"><h2 id="invTitle">${isNew ? 'New Document' : esc(doc.number)}</h2><button class="icon-btn" id="mx">${ICONS.x}</button></div>
@@ -946,6 +1095,14 @@ function invoiceModal(inv, fromJob) {
         <div class="field"><label>Billing address</label><input id="i_addr" value="${esc(doc.billingAddress)}"></div>
       </div>
       <div class="field"><label>Line items</label>
+        ${isNew && job ? `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+          <div class="seg" id="basisSeg">
+            <button data-basis="planned" class="${basis === 'planned' ? 'active' : ''}">Planned (all gear × days)</button>
+            <button data-basis="actual" class="${basis === 'actual' ? 'active' : ''}">Actual used (approved)</button>
+          </div>
+          <span class="hint" style="font-size:11.5px;color:var(--ink-3)">${approvedCount}/${(job.shootDays || []).length} day${(job.shootDays || []).length === 1 ? '' : 's'} approved</span>
+        </div>` : ''}
         <div class="table-wrap glass" style="border-radius:12px">
         <table class="data" id="liTable">
           <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Days</th><th class="num">Rate</th><th class="num">Amount</th><th></th></tr></thead>
@@ -1005,6 +1162,13 @@ function invoiceModal(inv, fromJob) {
   drawLines(); drawTotals();
 
   $('#liAdd', m).onclick = () => { readLines(); doc.lineItems.push({ desc: '', qty: 1, days: 1, rate: 0 }); drawLines(); };
+  $$('#basisSeg button', m).forEach(b => b.onclick = () => {
+    basis = b.dataset.basis;
+    $$('#basisSeg button', m).forEach(x => x.classList.toggle('active', x === b));
+    doc.lineItems = basis === 'actual' ? actualLines(job) : plannedLines(job);
+    drawLines(); drawTotals();
+    if (basis === 'actual' && !doc.lineItems.length) toast('No approved usage yet — approve days in the job’s Usage tab');
+  });
   $$('#iDiscSeg button', m).forEach(b => b.onclick = () => { doc.discount.type = b.dataset.t; $$('#iDiscSeg button', m).forEach(x => x.classList.toggle('active', x === b)); drawTotals(); });
   $('#i_disc', m).oninput = drawTotals;
   $('#i_tax', m).oninput = drawTotals;
@@ -1187,7 +1351,7 @@ function viewTeam(v) {
 }
 
 /** app role → database role (what they may actually read/write in the cloud) */
-const DB_ROLE = { owner: 'owner', admin: 'admin', tech: 'editor', viewer: 'viewer' };
+const DB_ROLE = { owner: 'owner', admin: 'admin', tech: 'editor', crew: 'editor', viewer: 'viewer' };
 
 /** Record/refresh the invite in Supabase so this email gets the right access. */
 async function pushInvite(email, appRole) {
