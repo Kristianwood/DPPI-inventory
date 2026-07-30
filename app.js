@@ -182,20 +182,41 @@ function closeModal() { $('#modalRoot').innerHTML = ''; }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 /* ---------------- photo handling ---------------- */
-function resizeImage(file, max = 900) {
+function scaleToDataURI(img, max, quality) {
+  const scale = Math.min(1, max / Math.max(img.width, img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', quality);
+}
+/** Returns {full, thumb} — full for the gallery, tiny thumb for lists/nodes. */
+function resizeImage(file) {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, max / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      res(c.toDataURL('image/jpeg', 0.78));
+      res({ full: scaleToDataURI(img, 900, 0.78), thumb: scaleToDataURI(img, 128, 0.7) });
       URL.revokeObjectURL(img.src);
     };
     img.onerror = rej;
     img.src = URL.createObjectURL(file);
   });
+}
+/** Thumb for list rows; falls back to the full photo for gear saved before thumbs existed. */
+const thumbOf = g => (g.thumbs && g.thumbs[0]) || (g.photos && g.photos[0]) || '';
+/** One-time background migration: build thumbs for gear that predates them. */
+function ensureThumbs() {
+  const missing = DB.state.gear.filter(g => g.photos?.length && (!g.thumbs || g.thumbs.length !== g.photos.length));
+  if (!missing.length) return;
+  let work = Promise.resolve();
+  for (const g of missing) {
+    work = work.then(() => Promise.all((g.photos || []).map(p => new Promise(res => {
+      const img = new Image();
+      img.onload = () => res(scaleToDataURI(img, 128, 0.7));
+      img.onerror = () => res('');
+      img.src = p;
+    }))).then(thumbs => { g.thumbs = thumbs; }));
+  }
+  work.then(() => { DB.commit('thumbs-migrate'); });
 }
 
 /* ============================================================
@@ -407,7 +428,8 @@ function viewBoard(v) {
   wireNodes(job);
   if (can('manageJobs')) {
     renderDrawer(job);
-    $('#drawerSearch').oninput = () => renderDrawer(job);
+    let dT;
+    $('#drawerSearch').oninput = () => { clearTimeout(dT); dT = setTimeout(() => renderDrawer(job), 120); };
   }
 }
 
@@ -415,7 +437,7 @@ function nodeHTML(job, n) {
   const isKit = n.kind === 'kit';
   const ref = isKit ? getKit(n.refId) : getGear(n.refId);
   if (!ref) return '';
-  const thumb = !isKit && ref.photos?.[0] ? `<img src="${ref.photos[0]}" alt="">` : (isKit ? ICONS.kit : ICONS.box);
+  const thumb = !isKit && thumbOf(ref) ? `<img src="${thumbOf(ref)}" alt="">` : (isKit ? ICONS.kit : ICONS.box);
   const rate = nodeDayRate(n);
   const avail = isKit ? kitAvailableAcross(ref, job.shootDays, job.id) : availableAcross(n.refId, job.shootDays, job.id);
   return `
@@ -490,7 +512,7 @@ function renderDrawer(job) {
   ];
   list.innerHTML = items.length ? items.map(it => `
     <div class="ditem ${it.avail <= 0 ? 'depleted' : ''}" data-kind="${it.kind}" data-ref="${it.ref.id}">
-      <div class="row-thumb">${it.kind === 'gear' && it.ref.photos?.[0] ? `<img src="${it.ref.photos[0]}" alt="">` : (it.kind === 'kit' ? ICONS.kit : ICONS.box)}</div>
+      <div class="row-thumb">${it.kind === 'gear' && thumbOf(it.ref) ? `<img src="${thumbOf(it.ref)}" alt="">` : (it.kind === 'kit' ? ICONS.kit : ICONS.box)}</div>
       <div class="m"><div class="t">${esc(it.ref.name)}</div><div class="s">${it.avail} available${can('viewRates') ? ' · ' + fmtMoney(it.kind === 'kit' ? kitDayRate(it.ref) : (it.ref.dailyRate || 0)) + '/day' : ''}</div></div>
       <button class="add" data-add title="Add to job">＋</button>
     </div>`).join('')
@@ -577,7 +599,14 @@ function viewInventory(v) {
     </div>
     ${invTab === 'gear' ? renderGearList(gear, t) : renderKitList(kits)}
   `;
-  $('#invSearch').oninput = e => { route.q = e.target.value; render(); const s = $('#invSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); };
+  let searchT;
+  $('#invSearch').oninput = e => {
+    clearTimeout(searchT);
+    searchT = setTimeout(() => {
+      route.q = e.target.value; render();
+      const s = $('#invSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length);
+    }, 160);
+  };
   $('#tabGear').onclick = () => { invTab = 'gear'; render(); };
   $('#tabKits').onclick = () => { invTab = 'kits'; render(); };
   if ($('#newGear')) $('#newGear').onclick = () => gearModal();
@@ -593,7 +622,7 @@ function renderGearList(gear, t) {
     const avail = g.qty - out;
     return `
     <div class="row-card glass" data-gear="${g.id}">
-      <div class="row-thumb">${g.photos?.[0] ? `<img src="${g.photos[0]}" alt="">` : ICONS.box}</div>
+      <div class="row-thumb">${thumbOf(g) ? `<img src="${thumbOf(g)}" alt="">` : ICONS.box}</div>
       <div class="row-main">
         <div class="t">${esc(g.name)}</div>
         <div class="s">${esc(g.category || 'Uncategorized')}${g.serial ? ' · SN ' + esc(g.serial) : ''}${can('viewRates') ? ' · ' + fmtMoney(g.dailyRate || 0) + '/day' : ''}</div>
@@ -656,8 +685,10 @@ function gearProfile(gearId) {
 
 function gearModal(g) {
   const isNew = !g;
-  const item = g || { name: '', category: '', serial: '', qty: 1, dailyRate: 0, replacementValue: '', notes: '', photos: [] };
+  const item = g || { name: '', category: '', serial: '', qty: 1, dailyRate: 0, replacementValue: '', notes: '', photos: [], thumbs: [] };
   const photos = [...(item.photos || [])];
+  const thumbs = [...(item.thumbs || [])];
+  while (thumbs.length < photos.length) thumbs.push(photos[thumbs.length]);
   const m = openModal(`
     <div class="modal-head"><h2>${isNew ? 'Add Gear' : 'Edit Gear'}</h2><button class="icon-btn" id="mx">${ICONS.x}</button></div>
     <div class="modal-body">
@@ -686,15 +717,15 @@ function gearModal(g) {
     </div>
   `);
   const drawPhotos = () => {
-    $('#photoGrid', m).innerHTML = photos.map((p, i) => `<div class="photo-cell"><img src="${p}"><button class="rm" data-i="${i}">×</button></div>`).join('')
+    $('#photoGrid', m).innerHTML = photos.map((p, i) => `<div class="photo-cell"><img src="${thumbs[i] || p}"><button class="rm" data-i="${i}">×</button></div>`).join('')
       + `<div class="photo-add" id="photoAdd" role="button" tabindex="0" title="Add photo">＋</div>`;
-    $$('#photoGrid .rm', m).forEach(b => b.onclick = () => { photos.splice(+b.dataset.i, 1); drawPhotos(); });
+    $$('#photoGrid .rm', m).forEach(b => b.onclick = () => { photos.splice(+b.dataset.i, 1); thumbs.splice(+b.dataset.i, 1); drawPhotos(); });
     $('#photoAdd', m).onclick = () => $('#g_photo', m).click();
   };
   drawPhotos();
   $('#g_photo', m).onchange = async e => {
     for (const f of e.target.files) {
-      try { photos.push(await resizeImage(f)); } catch { toast('Could not read that image'); }
+      try { const r = await resizeImage(f); photos.push(r.full); thumbs.push(r.thumb); } catch { toast('Could not read that image'); }
     }
     e.target.value = ''; drawPhotos();
   };
@@ -715,7 +746,7 @@ function gearModal(g) {
       qty: Math.max(1, +$('#g_qty', m).value || 1),
       dailyRate: +$('#g_rate', m).value || 0,
       replacementValue: +$('#g_repl', m).value || '',
-      notes: $('#g_notes', m).value.trim(), photos,
+      notes: $('#g_notes', m).value.trim(), photos, thumbs,
     };
     if (isNew) DB.state.gear.push({ id: DB.uid('g'), createdAt: Date.now(), ...data });
     else Object.assign(g, data);
@@ -1453,6 +1484,7 @@ function boot() {
     showGate();
   }
   DB.sync.init();
+  setTimeout(ensureThumbs, 800);
 }
 
 DB.onChange(reason => {

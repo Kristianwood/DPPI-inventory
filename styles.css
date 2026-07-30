@@ -74,23 +74,31 @@ button { cursor: pointer; background: none; border: none; }
     radial-gradient(900px 700px at -10% 100%, rgba(2,132,199,.07), transparent 55%),
     var(--bg);
 }
-.orb { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; will-change: transform; }
-.orb-a { width: 480px; height: 480px; background: rgba(13,148,136,.16); top: -160px; right: -100px; animation: drift 26s ease-in-out infinite alternate; }
-.orb-b { width: 380px; height: 380px; background: rgba(2,132,199,.10); bottom: -120px; left: -120px; animation: drift 32s ease-in-out infinite alternate-reverse; }
-.orb-c { width: 260px; height: 260px; background: rgba(94,234,212,.07); top: 45%; left: 55%; animation: drift 38s ease-in-out infinite alternate; }
-@keyframes drift { from { transform: translate3d(0,0,0) scale(1); } to { transform: translate3d(-60px, 40px, 0) scale(1.12); } }
-@media (prefers-reduced-motion: reduce) { .orb { animation: none; } * { transition: none !important; } }
+/* orbs are pre-blurred radial gradients — no live blur filter, no animation (GPU-cheap) */
+.orb { position: absolute; border-radius: 50%; }
+.orb-a { width: 720px; height: 720px; top: -260px; right: -180px; background: radial-gradient(circle, rgba(13,148,136,.13), transparent 70%); }
+.orb-b { width: 620px; height: 620px; bottom: -220px; left: -220px; background: radial-gradient(circle, rgba(2,132,199,.09), transparent 70%); }
+.orb-c { width: 420px; height: 420px; top: 42%; left: 52%; background: radial-gradient(circle, rgba(94,234,212,.05), transparent 70%); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* ---------- glass primitives ---------- */
 .glass {
   background: var(--glass);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.35);
+  backdrop-filter: blur(14px) saturate(1.35);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-1), var(--glass-inset);
   border-radius: var(--r-lg);
 }
 .glass-strong { background: var(--glass-strong); }
+/* Cheap glass: repeated small surfaces (list rows, stats, calendar cells, cards)
+   skip the live backdrop blur — a translucent gradient reads the same on the dark
+   bg at a fraction of the GPU cost. Real blur stays on the big chrome surfaces. */
+.row-card.glass, .stat.glass, .cal-cell, .card.glass, .chart-card.glass, .table-wrap.glass, .ditem {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: linear-gradient(165deg, rgba(30, 42, 50, .5), rgba(19, 28, 34, .55));
+}
 
 /* ---------- shell layout ---------- */
 .shell { position: relative; z-index: 1; display: flex; min-height: 100dvh; }
@@ -254,8 +262,8 @@ table.data th.num { text-align: right; }
 .gnode {
   position: absolute; width: 216px; border-radius: var(--r-md);
   background: rgba(16, 26, 32, 0.55);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
-  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  backdrop-filter: blur(12px) saturate(1.5);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-1), var(--glass-inset);
   transition: box-shadow .2s, border-color .2s;
