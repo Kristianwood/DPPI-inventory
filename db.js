@@ -74,7 +74,12 @@ const DB = (() => {
     state.meta.updatedAt = Date.now();
     state.meta.updatedBy = DEVICE_ID;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(persistNow, 150);
+    // serialize during idle time — stringifying a workspace full of photos on the
+    // interaction path makes every tap feel heavy
+    saveTimer = setTimeout(() => {
+      if ('requestIdleCallback' in window) requestIdleCallback(persistNow, { timeout: 1000 });
+      else persistNow();
+    }, 250);
     listeners.forEach(fn => { try { fn(reason); } catch (e) { console.error(e); } });
     if (sync.client && sync.session) {
       clearTimeout(pushTimer);

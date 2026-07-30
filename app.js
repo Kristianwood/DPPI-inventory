@@ -320,13 +320,16 @@ function renderNav() {
   dot.title = 'Sync: ' + DB.sync.status + (DB.sync.lastError ? ' — ' + DB.sync.lastError : '');
 }
 
+let lastRenderedView = null;
 function render() {
   renderNav();
   const v = $('#view');
   v.classList.remove('hidden');
   const views = { jobs: viewJobs, board: viewBoard, inventory: viewInventory, calendar: viewCalendar, invoices: viewInvoices, revenue: viewRevenue, team: viewTeam, settings: viewSettings };
   (views[route.view] || viewJobs)(v);
-  if (route.view !== 'board') window.scrollTo(0, 0);
+  // only jump to top when actually switching views — not on same-view refreshes
+  if (route.view !== 'board' && route.view !== lastRenderedView) window.scrollTo(0, 0);
+  lastRenderedView = route.view;
 }
 
 /* ============================================================
@@ -446,9 +449,23 @@ function jobModal(job) {
 /* ============================================================
    VIEW: JOB BOARD (floating node canvas)
    ============================================================ */
+let boardScroll = { jobId: null, x: 0, y: 0 };
+function boardMetricsHTML(t) {
+  return `
+        <div class="board-metric"><div class="k">Day rate</div><div class="v">${fmtMoney(t.dayRate)}</div></div>
+        ${t.off ? `<div class="board-metric"><div class="k">Discount</div><div class="v" style="color:var(--warn)">−${fmtMoney(t.off)}</div></div>` : ''}
+        <div class="board-metric"><div class="k">Job total</div><div class="v">${fmtMoney(t.net)}</div></div>`;
+}
+function updateBoardMetrics(job) {
+  const box = $('.board-metrics');
+  if (box) box.innerHTML = boardMetricsHTML(jobTotals(job));
+}
+
 function viewBoard(v) {
   const job = getJob(route.jobId);
   if (!job) { go('jobs'); return; }
+  const prevWrap = $('#canvasWrap');
+  if (prevWrap) boardScroll = { jobId: route.jobId, x: prevWrap.scrollLeft, y: prevWrap.scrollTop };
   const t = jobTotals(job);
   const st = jobStatus(job);
   const showUsageTab = canLogUsage(job) || can('manageJobs');
@@ -470,12 +487,7 @@ function viewBoard(v) {
           ${crew.length ? `<span class="crew-stack">${crew.slice(0, 4).map(u => `<span class="avatar" title="${esc(u.name)}">${esc(u.name.slice(0, 2).toUpperCase())}</span>`).join('')}${crew.length > 4 ? `<span class="avatar">+${crew.length - 4}</span>` : ''}</span>` : ''}
         </div>
       </div>
-      ${can('viewRates') ? `
-      <div class="board-metrics">
-        <div class="board-metric"><div class="k">Day rate</div><div class="v">${fmtMoney(t.dayRate)}</div></div>
-        ${t.off ? `<div class="board-metric"><div class="k">Discount</div><div class="v" style="color:var(--warn)">−${fmtMoney(t.off)}</div></div>` : ''}
-        <div class="board-metric"><div class="k">Job total</div><div class="v">${fmtMoney(t.net)}</div></div>
-      </div>` : ''}
+      ${can('viewRates') ? `<div class="board-metrics">${boardMetricsHTML(t)}</div>` : ''}
       <div class="page-actions">
         ${showUsageTab ? `<div class="seg"><button data-bm="canvas" class="${mode === 'canvas' ? 'active' : ''}">Board</button><button data-bm="usage" class="${mode === 'usage' ? 'active' : ''}">Usage</button></div>` : ''}
         ${can('manageJobs') ? `<button class="btn sm" id="bCrew">${ICONS.team} Crew</button>` : ''}
@@ -530,6 +542,12 @@ function viewBoard(v) {
     renderDrawer(job);
     let dT;
     $('#drawerSearch').oninput = () => { clearTimeout(dT); dT = setTimeout(() => renderDrawer(job), 120); };
+  }
+  /* restore where the user was on the canvas — full re-renders must not reset the view */
+  if (boardScroll.jobId === route.jobId) {
+    const wrap = $('#canvasWrap');
+    wrap.scrollLeft = boardScroll.x;
+    wrap.scrollTop = boardScroll.y;
   }
 }
 
@@ -719,21 +737,21 @@ function renderUsage(job) {
       </div>
     </div>`;
 
-  $$('[data-uday]', wrap).forEach(b => b.onclick = () => { route.uday = b.dataset.uday; render(); });
+  $$('[data-uday]', wrap).forEach(b => b.onclick = () => { route.uday = b.dataset.uday; renderUsage(job); });
   $$('[data-un]', wrap).forEach(b => b.onclick = () => {
     const n = nodes.find(x => x.id === b.dataset.un); if (!n) return;
     const cur = usedOn(job, d, n.id);
     setUsed(job, d, n.id, Math.max(0, Math.min(n.qty, cur + (+b.dataset.d))));
-    DB.commit('usage'); render();
+    DB.commit('usage'); renderUsage(job);
   });
-  if ($('#allUsed', wrap)) $('#allUsed', wrap).onclick = () => { nodes.forEach(n => setUsed(job, d, n.id, n.qty)); DB.commit('usage'); render(); };
-  if ($('#noneUsed', wrap)) $('#noneUsed', wrap).onclick = () => { if (job.usage) delete job.usage[d]; DB.commit('usage'); render(); };
+  if ($('#allUsed', wrap)) $('#allUsed', wrap).onclick = () => { nodes.forEach(n => setUsed(job, d, n.id, n.qty)); DB.commit('usage'); renderUsage(job); };
+  if ($('#noneUsed', wrap)) $('#noneUsed', wrap).onclick = () => { if (job.usage) delete job.usage[d]; DB.commit('usage'); renderUsage(job); };
   if ($('#approveDay', wrap)) $('#approveDay', wrap).onclick = () => {
     job.usageApproved = job.usageApproved || {};
     job.usageApproved[d] = { by: currentUser.id, at: Date.now() };
-    DB.commit('usage-approve'); render(); toast(fmtDateShort(d) + ' approved for billing');
+    DB.commit('usage-approve'); renderUsage(job); toast(fmtDateShort(d) + ' approved for billing');
   };
-  if ($('#unapprove', wrap)) $('#unapprove', wrap).onclick = () => { delete job.usageApproved[d]; DB.commit('usage-approve'); render(); };
+  if ($('#unapprove', wrap)) $('#unapprove', wrap).onclick = () => { delete job.usageApproved[d]; DB.commit('usage-approve'); renderUsage(job); };
 }
 
 function nodeHTML(job, n) {
@@ -817,8 +835,18 @@ function wireNodes(job) {
         if (avail <= 0) { toast('None left for these dates'); return; }
       }
       node.qty = Math.max(1, node.qty + d);
-      if (node.qty === 0) job.nodes = job.nodes.filter(n => n.id !== node.id);
-      DB.commit('node-qty'); render();
+      DB.commit('node-qty');
+      /* patch in place — a full re-render on every tap is what makes the board feel heavy */
+      if (node.kind === 'kit' && node.expanded) { render(); return; }
+      $('.q', el).textContent = node.qty;
+      const rateEl = $('.gnode-rate', el);
+      if (rateEl) rateEl.textContent = fmtMoney(nodeDayRate(node)) + '/day';
+      const avail = node.kind === 'kit' ? kitAvailableAcross(getKit(node.refId), job.shootDays, job.id) : availableAcross(node.refId, job.shootDays, job.id);
+      const plus = $('[data-q="1"]', el);
+      if (plus) plus.disabled = avail <= 0;
+      updateBoardMetrics(job);
+      if (can('manageJobs')) renderDrawer(job);
+      updateMinimap();
     });
     /* drag node around canvas */
     const head = $('[data-drag]', el);
@@ -1930,8 +1958,22 @@ function enter(user) {
 /* ============================================================
    BOOT
    ============================================================ */
+/** Accounts created before a permission existed get it backfilled from their role preset. */
+function migratePerms() {
+  let changed = false;
+  for (const u of DB.state.team) {
+    const preset = ROLE_PRESETS[u.role] || {};
+    u.perms = u.perms || {};
+    for (const [k] of PERMS) {
+      if (u.perms[k] === undefined && preset[k] !== undefined) { u.perms[k] = preset[k]; changed = true; }
+    }
+  }
+  if (changed) DB.commit('perms-migrate');
+}
+
 function boot() {
   DB.load();
+  migratePerms();
   const savedUser = DB.state.team.find(u => u.id === localStorage.getItem('dppi_user'));
   if (savedUser) {
     currentUser = savedUser;
